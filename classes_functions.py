@@ -99,7 +99,7 @@ def get_bands_from_signatures(minhash_sig_matrix, nbr_bands):
     return bands
 
 # Function that creates the buckets for every band and assigns the ids of the corresponding documents
-def get_band_buckets(bands, hash_funct):
+def get_band_buckets(bands, hash_size):
 
     # Create bucket
     buckets = {}
@@ -107,9 +107,11 @@ def get_band_buckets(bands, hash_funct):
     # Loop through all the bands
     for band_nbr, band in bands.items():
 
+        randomiser = randint(0,10000000000)
+
         # Loop through the 2 hashes in the band and categorise them, whether they match or not
         for i in range(len(band)):
-            bucket_hash_i = hash_funct.get_hash(band[i])
+            bucket_hash_i = hashObject(randomiser, hash_size).get_hash(band[i])
 
             if bucket_hash_i in buckets.keys():
                 buckets[bucket_hash_i].append(i)
@@ -139,7 +141,7 @@ def minhash_lsh(documents, k, hash_size, nbr_bands):
 
     bands = get_bands_from_signatures(minhash_sig_matrix, nbr_bands)
 
-    buckets = get_band_buckets(bands, hashObject(11, hash_size))
+    buckets = get_band_buckets(bands, hash_size)
 
     candidates_list = get_candidates_list(buckets)
 
@@ -155,7 +157,7 @@ def get_documents(df):
 
 def initialise_data(df, train_frac):
 
-    df_train = df.sample(frac=train_frac, replace=True)
+    df_train = df.sample(frac=train_frac)
     df_test = df.drop(df_train.index)
 
     shops = df["shop"].to_list()
@@ -196,9 +198,9 @@ def prepapre_df(candidates_list, documents, shops, model_id, brands, matched_ids
     df["same_matched_id"] = (df["id_matched_1"] == df["id_matched_2"]).astype(int)
 
     # Ready-made features
+    df["jaccard"] = df.parallel_apply(lambda x: sim.jaccard.normalized_similarity(x['candidate_1'], x['candidate_2']), axis=1)
     df["levensthein"] = df.parallel_apply(lambda x: sim.levenshtein.normalized_similarity(x['candidate_1'], x['candidate_2']), axis=1)
     df["cosine"] = df.parallel_apply(lambda x: sim.cosine.normalized_similarity(x['candidate_1'], x['candidate_2']), axis=1)
-    df["jaccard"] = df.parallel_apply(lambda x: sim.jaccard.normalized_similarity(x['candidate_1'], x['candidate_2']), axis=1)
     df["sorensen_dice"] = df.parallel_apply(lambda x: sim.sorensen_dice.normalized_similarity(x['candidate_1'], x['candidate_2']), axis=1)
     df["strcmp95"] = df.parallel_apply(lambda x: sim.strcmp95.normalized_similarity(x['candidate_1'], x['candidate_2']), axis=1)
     df["monge_elkan"] = df.parallel_apply(lambda x: sim.monge_elkan.normalized_similarity(x['candidate_1'], x['candidate_2']), axis=1)
