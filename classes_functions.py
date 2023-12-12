@@ -9,6 +9,9 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import f1_score, confusion_matrix, recall_score, precision_score
 import statistics
 from itertools import product
+import swifter
+import time
+import rapidfuzz
 
 # Compute shinglings given string and size of shinglings
 def get_shinglings(lst, k):
@@ -175,20 +178,20 @@ def prepapre_df(candidates_list, documents, shops, model_id, brands, matched_ids
 
     df = pd.DataFrame(candidates_list, columns=["candidate_1_id", "candidate_2_id"])
 
-    df["candidate_1"] = df.parallel_apply(lambda x: documents[x.candidate_1_id], axis=1)
-    df["candidate_2"] = df.parallel_apply(lambda x: documents[x.candidate_2_id], axis=1)
+    df["candidate_1"] = df["candidate_1_id"].map(documents)
+    df["candidate_2"] = df["candidate_2_id"].map(documents)
 
-    df["shop_1"] = df.parallel_apply(lambda x: shops[x.candidate_1_id], axis=1)
-    df["shop_2"] = df.parallel_apply(lambda x: shops[x.candidate_2_id], axis=1)
+    df["shop_1"] = df["candidate_1_id"].map(shops)
+    df["shop_2"] =  df["candidate_2_id"].map(shops)
 
-    df["brand_1"] = df.parallel_apply(lambda x: brands[x.candidate_1_id], axis=1)
-    df["brand_2"] = df.parallel_apply(lambda x: brands[x.candidate_2_id], axis=1)
+    df["brand_1"] = df["candidate_1_id"].map(brands)
+    df["brand_2"] = df["candidate_2_id"].map(brands)
 
-    df["id_1"] = df.parallel_apply(lambda x: model_id[x.candidate_1_id], axis=1)
-    df["id_2"] = df.parallel_apply(lambda x: model_id[x.candidate_2_id], axis=1)
+    df["id_1"] = df["candidate_1_id"].map(model_id)
+    df["id_2"] = df["candidate_2_id"].map(model_id)
 
-    df["id_matched_1"] = df.parallel_apply(lambda x: matched_ids[x.candidate_1_id], axis=1)
-    df["id_matched_2"] = df.parallel_apply(lambda x: matched_ids[x.candidate_2_id], axis=1)
+    df["id_matched_1"] = df["candidate_1_id"].map(matched_ids)
+    df["id_matched_2"] = df["candidate_2_id"].map(matched_ids)
 
     df["duplicate"] = (df["id_1"] == df["id_2"]).astype("int")
     df["same_shop"] = (df["shop_1"] == df["shop_2"]).astype("int")
@@ -198,12 +201,11 @@ def prepapre_df(candidates_list, documents, shops, model_id, brands, matched_ids
     df["same_matched_id"] = (df["id_matched_1"] == df["id_matched_2"]).astype(int)
 
     # Ready-made features
-    df["jaccard"] = df.parallel_apply(lambda x: sim.jaccard.normalized_similarity(x['candidate_1'], x['candidate_2']), axis=1)
-    df["levensthein"] = df.parallel_apply(lambda x: sim.levenshtein.normalized_similarity(x['candidate_1'], x['candidate_2']), axis=1)
-    df["cosine"] = df.parallel_apply(lambda x: sim.cosine.normalized_similarity(x['candidate_1'], x['candidate_2']), axis=1)
-    df["sorensen_dice"] = df.parallel_apply(lambda x: sim.sorensen_dice.normalized_similarity(x['candidate_1'], x['candidate_2']), axis=1)
-    df["strcmp95"] = df.parallel_apply(lambda x: sim.strcmp95.normalized_similarity(x['candidate_1'], x['candidate_2']), axis=1)
-    df["monge_elkan"] = df.parallel_apply(lambda x: sim.monge_elkan.normalized_similarity(x['candidate_1'], x['candidate_2']), axis=1)
+    df["jaccard"] = df.swifter.progress_bar(False).apply(lambda x: sim.jaccard.normalized_similarity(x['candidate_1'], x['candidate_2']), axis=1)
+    df["levensthein"] = df.swifter.progress_bar(False).apply(lambda x: rapidfuzz.distance.Levenshtein.normalized_similarity(x['candidate_1'], x['candidate_2']), axis=1)
+    df["cosine"] = df.swifter.progress_bar(False).apply(lambda x: sim.cosine.normalized_similarity(x['candidate_1'], x['candidate_2']), axis=1)
+    df["hamming"] = df.swifter.progress_bar(False).apply(lambda x: rapidfuzz.distance.Hamming.normalized_similarity(x['candidate_1'], x['candidate_2']), axis=1)
+    df["jarow"] = df.swifter.progress_bar(False).apply(lambda x: rapidfuzz.distance.JaroWinkler.normalized_similarity(x['candidate_1'], x['candidate_2']), axis=1)
 
     # Manually set same_shop to 0 if duplicate (otherwise the classifier will freak out), same for same_brand (if duplicate, set to 1)
     df.loc[df['duplicate'] == 1, 'same_shop'] = 0
@@ -241,6 +243,9 @@ def classification(X_train, y_train, X_test, y_test, prepped_df_test, y_pred_rej
 
 def main_run(df, train_frac, shingling_size, hash_size, nbr_bands):
 
+    # Initialise Time
+    start = time.process_time()
+
     #Initialise, split and get documents of data
     shops, brands, model_id, documents, matched_ids, documents_train, document_indices_train, documents_test, document_indices_test = initialise_data(df, train_frac)
 
@@ -248,7 +253,7 @@ def main_run(df, train_frac, shingling_size, hash_size, nbr_bands):
     candidates_list_train_temp = minhash_lsh(documents_train, shingling_size, hash_size, nbr_bands)
     candidates_list_test_temp = minhash_lsh(documents_test, shingling_size, hash_size, nbr_bands)
 
-    # Because indices are reset during LDH, get the real indices back from the original indices
+    # Because indices are reset during LSH, get the real indices back from the original indices
     candidates_list_train = set([tuple((document_indices_train[tup[0]], document_indices_train[tup[1]])) for tup in candidates_list_train_temp])
     candidates_list_test = set([tuple((document_indices_test[tup[0]], document_indices_test[tup[1]])) for tup in candidates_list_test_temp])
 
@@ -258,10 +263,12 @@ def main_run(df, train_frac, shingling_size, hash_size, nbr_bands):
     all_pairs_without_dupes_test = set([tuple(sorted(i)) for i in all_pairs_test if (i[0] != i[1])])
     pairs_set_non_dupe = list(set(all_pairs_without_dupes_test) - candidates_list_test)
 
+    fraction_of_comparison = len(candidates_list_test)/len(all_pairs_without_dupes_test)
+
     # Recreate the dataset from pairs rejected by LSH
     rejected_df = pd.DataFrame(pairs_set_non_dupe, columns=["candidate_1_id", "candidate_2_id"])
-    rejected_df["id_1"] = rejected_df.parallel_apply(lambda x: model_id[x.candidate_1_id], axis=1)
-    rejected_df["id_2"] = rejected_df.parallel_apply(lambda x: model_id[x.candidate_2_id], axis=1)
+    rejected_df["id_1"] = rejected_df.swifter.progress_bar(False).apply(lambda x: model_id[x.candidate_1_id], axis=1)
+    rejected_df["id_2"] = rejected_df.swifter.progress_bar(False).apply(lambda x: model_id[x.candidate_2_id], axis=1)
 
     # Get the duplicates from the LSH-rejected pairs
     y_real_rejected = (rejected_df["id_1"] == rejected_df["id_2"]).astype("int").to_list()
@@ -269,12 +276,19 @@ def main_run(df, train_frac, shingling_size, hash_size, nbr_bands):
     # Manually set their predictions to 0 (non-dupe)
     y_pred_rejected = np.zeros(len(y_real_rejected)).tolist()
 
-    # Prep the data for Classification (add features, set duplicate marker...)
-    prepped_df_train = prepapre_df(list(candidates_list_train), documents, shops, model_id, brands, matched_ids)
-    prepped_df_test = prepapre_df(list(candidates_list_test), documents, shops, model_id, brands, matched_ids)
+    # Create Maps out of the initial lists
+    documents_map = {index: value for index, value in enumerate(documents)}
+    shops_map = {index: value for index, value in enumerate(shops)}
+    model_id_map = {index: value for index, value in enumerate(model_id)}
+    brands_map = {index: value for index, value in enumerate(brands)}
+    matched_ids_map = {index: value for index, value in enumerate(matched_ids)}
 
-    # Create X and y datasets, taking care of adding the  LSH-rejected y
-    features = ["same_shop", "same_brand", "same_matched_id", "cosine", "levensthein", "jaccard", "sorensen_dice", "strcmp95", "monge_elkan"]
+    # Prep the data for Classification (add features, set duplicate marker...)
+    prepped_df_train = prepapre_df(list(candidates_list_train), documents_map, shops_map, model_id_map, brands_map, matched_ids_map)
+    prepped_df_test = prepapre_df(list(candidates_list_test), documents_map, shops_map, model_id_map, brands_map, matched_ids_map)
+
+    # Create X and y datasets, taking care of adding the  LSH-rejected y'
+    features = ["same_shop", "same_brand", "same_matched_id", "jaccard", "levensthein", "cosine", "hamming", "jarow"]
     X_train = prepped_df_train[features]
     y_train = prepped_df_train["duplicate"]
     X_test = prepped_df_test[features]
@@ -283,4 +297,7 @@ def main_run(df, train_frac, shingling_size, hash_size, nbr_bands):
     # Perform classification
     f1, f1_star, confusion_matrix_arr = classification(X_train, y_train, X_test, y_test, prepped_df_test, y_pred_rejected)
 
-    return f1, f1_star, confusion_matrix_arr, all_pairs_without_dupes_test
+    # Get runtime
+    runtime_sec = time.process_time() - start
+
+    return f1, f1_star, confusion_matrix_arr, all_pairs_without_dupes_test, runtime_sec, fraction_of_comparison
